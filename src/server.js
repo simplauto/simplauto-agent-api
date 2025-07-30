@@ -18,6 +18,19 @@ const aiAgentConfig = {
   phoneNumberId: process.env.AGENT_PHONE_NUMBER_ID
 };
 
+// Validation de la configuration au démarrage
+const missingVars = [];
+if (!aiAgentConfig.agentId) missingVars.push('AI_AGENT_ID');
+if (!aiAgentConfig.apiUrl) missingVars.push('AI_AGENT_API_URL');
+if (!aiAgentConfig.elevenlabsApiKey) missingVars.push('ELEVENLABS_API_KEY');
+if (!aiAgentConfig.phoneNumber) missingVars.push('AGENT_PHONE_NUMBER');
+if (!aiAgentConfig.phoneNumberId) missingVars.push('AGENT_PHONE_NUMBER_ID');
+
+if (missingVars.length > 0) {
+  console.error('❌ Variables d\'environnement manquantes:', missingVars.join(', '));
+  console.error('Veuillez configurer ces variables dans Railway');
+}
+
 const aiClient = new AIAgentClient(aiAgentConfig);
 
 // Validation des données du webhook
@@ -80,6 +93,15 @@ app.post('/api/webhook/refund-request', validateRefundRequest, async (req, res) 
       telephone: `${normalizedPhone} (original: ${rawPhoneNumber})`
     });
 
+    // Vérifier la configuration avant l'appel
+    if (missingVars.length > 0) {
+      return res.status(500).json({
+        success: false,
+        error: 'Configuration incomplète',
+        missingVars
+      });
+    }
+
     // Appeler l'agent IA immédiatement
     const result = await aiClient.callAgentWithRetry(refundRequest);
 
@@ -109,10 +131,22 @@ app.post('/api/webhook/refund-request', validateRefundRequest, async (req, res) 
 
 // Health check
 app.get('/api/health', (req, res) => {
+  const configStatus = {
+    hasAgentId: !!aiAgentConfig.agentId,
+    hasApiUrl: !!aiAgentConfig.apiUrl,
+    hasApiKey: !!aiAgentConfig.elevenlabsApiKey,
+    hasPhoneNumber: !!aiAgentConfig.phoneNumber,
+    hasPhoneNumberId: !!aiAgentConfig.phoneNumberId
+  };
+
+  const isConfigured = Object.values(configStatus).every(Boolean);
+
   res.json({
     success: true,
     message: 'API Simplauto Refund opérationnelle',
-    agent: aiClient.getPhoneInfo()
+    configured: isConfigured,
+    config: configStatus,
+    agent: isConfigured ? aiClient.getPhoneInfo() : null
   });
 });
 
