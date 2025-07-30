@@ -32,7 +32,8 @@ class AIAgentClient {
           marque_vehicule: refundRequest.marque_vehicule,
           modele_vehicule: refundRequest.modele_vehicule,
           immatriculation: refundRequest.immatriculation,
-          reference: refundRequest.reference
+          reference: refundRequest.reference,
+          backoffice_url: refundRequest.backoffice_url
         }
       }
     };

@@ -163,7 +163,8 @@ app.post('/api/webhook/refund-request', validateRefundRequest, async (req, res) 
       marque_vehicule: vehicule.brand,
       modele_vehicule: vehicule.model,
       immatriculation: vehicule.registration_number,
-      telephone_centre: normalizedPhone
+      telephone_centre: normalizedPhone,
+      backoffice_url: booking.backoffice_url
     };
 
     console.log('Demande de remboursement reçue:', {
@@ -277,11 +278,27 @@ app.post('/api/webhook/post-call', express.raw({ type: 'application/json' }), as
       status: webhookData.status
     });
 
-    // Récupérer les données de conversation stockées
-    const conversationData = activeConversations.get(conversationId);
+    // Récupérer les données de conversation depuis le cache ou les dynamic variables
+    let conversationData = activeConversations.get(conversationId);
+    
     if (!conversationData) {
-      console.log('Conversation non trouvée dans le cache:', conversationId);
-      return res.status(200).json({ received: true, skipped: 'conversation not found' });
+      console.log('Conversation non trouvée dans le cache, récupération depuis ElevenLabs:', conversationId);
+      
+      // Récupérer depuis les dynamic variables d'ElevenLabs
+      const dynamicVars = webhookData.conversation_initiation_client_data?.dynamic_variables;
+      if (dynamicVars && dynamicVars.reference) {
+        conversationData = {
+          reference: dynamicVars.reference,
+          backoffice_url: dynamicVars.backoffice_url || null,
+          customer_name: dynamicVars.nom_client,
+          phone_number: dynamicVars.system__called_number,
+          timestamp: Date.now()
+        };
+        console.log('Données récupérées depuis dynamic variables:', conversationData);
+      } else {
+        console.log('Impossible de récupérer les données de conversation');
+        return res.status(200).json({ received: true, skipped: 'conversation data not found' });
+      }
     }
 
     // Analyser le transcript pour obtenir le statut et motif
