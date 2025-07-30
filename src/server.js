@@ -4,7 +4,7 @@ const { normalizeFrenchPhoneNumber } = require('./phoneUtils');
 const AIAgentClient = require('./aiAgentClient');
 
 const app = express();
-const PORT = process.env.PORT || 3001;
+const PORT = process.env.PORT || 3000;
 
 // Middleware
 app.use(express.json());
