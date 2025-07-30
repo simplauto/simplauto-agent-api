@@ -1,5 +1,4 @@
 const axios = require('axios');
-const logger = require('./logger');
 
 class AIAgentClient {
   constructor(config) {
@@ -15,9 +14,7 @@ class AIAgentClient {
 
   async callAgent(refundRequest) {
     if (!refundRequest.telephone_centre) {
-      logger.error('Numéro de téléphone du centre manquant', {
-        reference: refundRequest.reference
-      });
+      console.error('Numéro de téléphone du centre manquant:', refundRequest.reference);
       return {
         success: false,
         error: 'Numéro de téléphone du centre de contrôle technique requis'
@@ -40,12 +37,11 @@ class AIAgentClient {
       }
     };
 
-    logger.info('Appel téléphonique vers le centre de contrôle technique', { 
-      agentId: this.agentId,
-      fromNumber: this.phoneNumber,
-      toNumber: refundRequest.telephone_centre,
+    console.log('Appel téléphonique vers le centre de contrôle technique:', {
+      agent: this.agentId,
+      from: this.phoneNumber,
+      to: refundRequest.telephone_centre,
       reference: refundRequest.reference,
-      centerName: refundRequest.nom_centre,
       client: refundRequest.nom_client
     });
 
@@ -58,11 +54,11 @@ class AIAgentClient {
         timeout: 60000 // 60 secondes
       });
 
-      logger.info('Appel téléphonique initié avec succès', { 
+      console.log('Appel téléphonique initié avec succès:', {
         reference: refundRequest.reference,
         conversationId: response.data.conversation_id,
         sipCallId: response.data.sip_call_id,
-        status: response.status 
+        status: response.status
       });
 
       return {
@@ -74,10 +70,10 @@ class AIAgentClient {
       };
 
     } catch (error) {
-      logger.error('Erreur lors de l\'appel téléphonique', {
+      console.error('Erreur lors de l\'appel téléphonique:', {
         reference: refundRequest.reference,
-        fromNumber: this.phoneNumber,
-        toNumber: refundRequest.telephone_centre,
+        from: this.phoneNumber,
+        to: refundRequest.telephone_centre,
         error: error.message,
         status: error.response?.status,
         data: error.response?.data
@@ -99,7 +95,7 @@ class AIAgentClient {
     }
 
     if (currentRetry < this.maxRetries) {
-      logger.info('Nouvelle tentative d\'appel à l\'agent IA', {
+      console.log('Nouvelle tentative d\'appel à l\'agent IA:', {
         reference: refundRequest.reference,
         attempt: currentRetry + 1,
         maxRetries: this.maxRetries
@@ -109,7 +105,7 @@ class AIAgentClient {
       return this.callAgentWithRetry(refundRequest, currentRetry + 1);
     }
 
-    logger.error('Échec définitif de l\'appel à l\'agent IA', {
+    console.error('Échec définitif de l\'appel à l\'agent IA:', {
       reference: refundRequest.reference,
       attempts: this.maxRetries + 1
     });
