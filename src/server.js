@@ -356,6 +356,22 @@ app.post('/api/webhook/post-call', express.raw({ type: 'application/json' }), as
   }
 });
 
+// Debug endpoint pour vérifier les conversations actives
+app.get('/api/debug/conversations', (req, res) => {
+  const conversations = Array.from(activeConversations.entries()).map(([id, data]) => ({
+    conversationId: id,
+    reference: data.reference,
+    backoffice_url: data.backoffice_url,
+    age_minutes: Math.round((Date.now() - data.timestamp) / 60000)
+  }));
+
+  res.json({
+    active_conversations: conversations,
+    total_count: conversations.length,
+    webhook_secret_configured: !!process.env.ELEVENLABS_WEBHOOK_SECRET
+  });
+});
+
 // Health check
 app.get('/api/health', (req, res) => {
   const configStatus = {
