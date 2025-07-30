@@ -231,33 +231,32 @@ app.post('/api/tools/validation-remboursement', express.json(), async (req, res)
     console.log('Body reçu:', req.body);
     console.log('===============================================');
 
-    // Extraire les paramètres du tool
-    const { status, motif, commentaire } = req.body;
+    // Extraire les paramètres du tool avec les noms français exacts
+    const { statut, motif } = req.body;
 
     // Validation des paramètres requis
-    if (!status) {
-      console.error('Paramètre status manquant dans le Client Tool');
+    if (!statut) {
+      console.error('Paramètre statut manquant dans le Client Tool');
       return res.status(400).json({
         success: false,
-        error: 'Le paramètre status est requis'
+        error: 'Le paramètre statut est requis'
       });
     }
 
-    // Valider que le status est dans les valeurs attendues
+    // Valider que le statut est dans les valeurs attendues
     const validStatuses = ['Accepté', 'Refusé', 'En attente de rappel'];
-    if (!validStatuses.includes(status)) {
-      console.error('Status invalide:', status);
+    if (!validStatuses.includes(statut)) {
+      console.error('Statut invalide:', statut);
       return res.status(400).json({
         success: false,
-        error: `Status doit être un de: ${validStatuses.join(', ')}`
+        error: `Statut doit être un de: ${validStatuses.join(', ')}`
       });
     }
 
     // Construire la réponse de validation
     const validationResult = {
-      status,
+      statut,
       ...(motif && { motif }),
-      ...(commentaire && { commentaire }),
       timestamp: new Date().toISOString(),
       source: 'agent_validation'
     };
@@ -267,7 +266,7 @@ app.post('/api/tools/validation-remboursement', express.json(), async (req, res)
     // Retourner une réponse structurée pour l'agent
     const response = {
       success: true,
-      message: `Validation enregistrée: ${status}`,
+      message: `Validation enregistrée: ${statut}`,
       data: validationResult
     };
 
@@ -292,13 +291,12 @@ app.get('/api/tools/validation-remboursement', (req, res) => {
     endpoint: '/api/tools/validation-remboursement',
     method: 'POST',
     expected_parameters: {
-      status: 'string (required) - Accepté, Refusé, ou En attente de rappel',
-      motif: 'string (optional) - Motif du refus si applicable',
-      commentaire: 'string (optional) - Commentaire additionnel'
+      statut: 'string (required) - Accepté, Refusé, ou En attente de rappel',
+      motif: 'string (optional) - Motif du refus si applicable'
     },
     example_request: {
-      status: 'Accepté',
-      commentaire: 'Remboursement validé par le centre'
+      statut: 'Refusé',
+      motif: 'Le client est arrivé en retard et a raté son créneau.'
     }
   });
 });
