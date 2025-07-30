@@ -159,7 +159,7 @@ app.use('*', (req, res) => {
 });
 
 // Démarrage
-app.listen(PORT, () => {
+app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 API démarrée sur le port ${PORT}`);
   console.log(`📞 Agent: ${aiAgentConfig.agentId}`);
   console.log(`📱 Numéro: ${aiAgentConfig.phoneNumber}`);
