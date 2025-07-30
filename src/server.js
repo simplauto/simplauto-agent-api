@@ -185,7 +185,7 @@ async function analyzeConversationResult(conversationId) {
         const fullTranscript = transcript.map(msg => msg.message || '').join(' ').toLowerCase();
         
         if (fullTranscript.includes('accepte') || fullTranscript.includes('valide') || fullTranscript.includes('accord')) {
-          refund_response = { status: 'accept', comment: 'Remboursement accepté par le centre' };
+          refund_response = { status: 'Accepté', comment: 'Remboursement accepté par le centre' };
         } else if (fullTranscript.includes('refuse') || fullTranscript.includes('impossible') || fullTranscript.includes('pas possible')) {
           // Extraire le motif du refus
           let reason = 'Motif non spécifié';
@@ -194,12 +194,12 @@ async function analyzeConversationResult(conversationId) {
           else if (fullTranscript.includes('politique')) reason = 'Politique de remboursement du centre';
           
           refund_response = { 
-            status: 'decline', 
+            status: 'Refusé', 
             reason: reason,
             comment: 'Remboursement refusé par le centre'
           };
         } else {
-          refund_response = { status: 'pending', comment: 'Réponse du centre à clarifier' };
+          refund_response = { status: 'En attente de rappel', comment: 'Réponse du centre à clarifier' };
         }
       }
     }
