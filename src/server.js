@@ -2,6 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const { normalizeFrenchPhoneNumber } = require('./phoneUtils');
 const AIAgentClient = require('./aiAgentClient');
+const axios = require('axios');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -33,6 +34,12 @@ if (missingVars.length > 0) {
 
 const aiClient = new AIAgentClient(aiAgentConfig);
 
+// Stockage en mémoire des conversations en cours
+const activeConversations = new Map();
+
+// Configuration webhook Make.com
+const MAKE_WEBHOOK_URL = 'https://hook.eu1.make.com/nsdyueym7xwbj1waaia3jrbjolanjelu';
+
 // Validation des données du webhook
 const validateRefundRequest = (req, res, next) => {
   const { booking, order, customer, vehicule, center } = req.body;
@@ -51,6 +58,8 @@ const validateRefundRequest = (req, res, next) => {
   if (!customer.last_name) missingFields.push('customer.last_name');
   if (!booking.date) missingFields.push('booking.date');
   if (!center.phone && !center.affiliated_phone) missingFields.push('center.phone ou center.affiliated_phone');
+  
+  // booking.backoffice_url est optionnel pour la rétrocompatibilité
 
   if (missingFields.length > 0) {
     return res.status(400).json({
@@ -106,6 +115,21 @@ app.post('/api/webhook/refund-request', validateRefundRequest, async (req, res) 
     const result = await aiClient.callAgentWithRetry(refundRequest);
 
     if (result.success) {
+      // Stocker les informations de la conversation pour le callback
+      activeConversations.set(result.conversationId, {
+        reference: order.reference,
+        backoffice_url: booking.backoffice_url || null, // Peut être null pour rétrocompatibilité
+        customer_name: refundRequest.nom_client,
+        phone_number: refundRequest.telephone_centre,
+        timestamp: Date.now()
+      });
+
+      console.log('Conversation stockée:', {
+        conversationId: result.conversationId,
+        reference: order.reference,
+        backoffice_url: booking.backoffice_url
+      });
+
       res.json({
         success: true,
         message: 'Appel téléphonique initié avec succès',
@@ -125,6 +149,166 @@ app.post('/api/webhook/refund-request', validateRefundRequest, async (req, res) 
     res.status(500).json({
       success: false,
       error: 'Erreur interne du serveur'
+    });
+  }
+});
+
+// Fonction pour analyser le résultat d'une conversation
+async function analyzeConversationResult(conversationId) {
+  try {
+    const response = await axios.get(`https://api.elevenlabs.io/v1/convai/conversations/${conversationId}`, {
+      headers: {
+        'xi-api-key': aiAgentConfig.elevenlabsApiKey
+      }
+    });
+
+    const conversation = response.data;
+    
+    // Analyser le statut de l'appel
+    let call_status = 'failed';
+    let refund_response = null;
+
+    if (conversation.status === 'done') {
+      const transcript = conversation.transcript || [];
+      const hasTranscript = transcript.length > 0;
+      const callDuration = conversation.metadata?.duration_seconds || 0;
+
+      // Déterminer le statut de l'appel
+      if (callDuration < 5 && !hasTranscript) {
+        call_status = 'no_answer';
+      } else if (transcript.some(msg => msg.message && msg.message.toLowerCase().includes('voicemail'))) {
+        call_status = 'voicemail';
+      } else if (hasTranscript) {
+        call_status = 'answered';
+        
+        // Analyser la réponse du centre seulement si l'appel a été décroché
+        const fullTranscript = transcript.map(msg => msg.message || '').join(' ').toLowerCase();
+        
+        if (fullTranscript.includes('accepte') || fullTranscript.includes('valide') || fullTranscript.includes('accord')) {
+          refund_response = { status: 'accept', comment: 'Remboursement accepté par le centre' };
+        } else if (fullTranscript.includes('refuse') || fullTranscript.includes('impossible') || fullTranscript.includes('pas possible')) {
+          // Extraire le motif du refus
+          let reason = 'Motif non spécifié';
+          if (fullTranscript.includes('absent')) reason = 'Client absent au rendez-vous';
+          else if (fullTranscript.includes('délai')) reason = 'Hors délai pour le remboursement';
+          else if (fullTranscript.includes('politique')) reason = 'Politique de remboursement du centre';
+          
+          refund_response = { 
+            status: 'decline', 
+            reason: reason,
+            comment: 'Remboursement refusé par le centre'
+          };
+        } else {
+          refund_response = { status: 'pending', comment: 'Réponse du centre à clarifier' };
+        }
+      }
+    }
+
+    return { call_status, refund_response, conversation };
+  } catch (error) {
+    console.error('Erreur lors de l\'analyse de la conversation:', error.message);
+    return { call_status: 'failed', refund_response: null, error: error.message };
+  }
+}
+
+// Fonction pour envoyer le callback vers Make.com
+async function sendCallbackToMake(conversationData, callResult) {
+  try {
+    // Ne pas envoyer le callback si pas de backoffice_url
+    if (!conversationData.backoffice_url) {
+      console.log('Pas de backoffice_url - callback ignoré pour:', conversationData.reference);
+      return { success: true, skipped: true };
+    }
+
+    const payload = {
+      booking: {
+        backoffice_url: conversationData.backoffice_url
+      },
+      order: {
+        reference: conversationData.reference
+      },
+      call_result: {
+        call_status: callResult.call_status,
+        ...(callResult.refund_response && { refund_response: callResult.refund_response })
+      }
+    };
+
+    console.log('Envoi callback vers Make.com:', JSON.stringify(payload, null, 2));
+
+    const response = await axios.post(MAKE_WEBHOOK_URL, payload, {
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      timeout: 30000
+    });
+
+    console.log('Callback envoyé avec succès vers Make.com:', {
+      reference: conversationData.reference,
+      status: response.status
+    });
+
+    return { success: true };
+  } catch (error) {
+    console.error('Erreur lors de l\'envoi du callback:', error.message);
+    return { success: false, error: error.message };
+  }
+}
+
+// Fonction de surveillance des conversations
+async function monitorConversations() {
+  const conversationsToCheck = Array.from(activeConversations.entries());
+  
+  for (const [conversationId, conversationData] of conversationsToCheck) {
+    try {
+      // Vérifier les conversations de plus de 30 secondes
+      const age = Date.now() - conversationData.timestamp;
+      if (age < 30000) continue;
+
+      const result = await analyzeConversationResult(conversationId);
+      
+      if (result.call_status !== 'failed') {
+        // Envoyer le callback vers Make.com
+        await sendCallbackToMake(conversationData, result);
+        
+        // Retirer la conversation de la surveillance
+        activeConversations.delete(conversationId);
+        
+        console.log('Conversation terminée et callback envoyé:', {
+          conversationId,
+          reference: conversationData.reference,
+          call_status: result.call_status
+        });
+      } else if (age > 300000) { // 5 minutes timeout
+        // Timeout - envoyer un callback d'échec
+        await sendCallbackToMake(conversationData, { call_status: 'failed', refund_response: null });
+        activeConversations.delete(conversationId);
+        
+        console.log('Conversation en timeout:', conversationId);
+      }
+    } catch (error) {
+      console.error('Erreur lors du monitoring de la conversation:', conversationId, error.message);
+    }
+  }
+}
+
+// Démarrer le monitoring toutes les 30 secondes
+setInterval(monitorConversations, 30000);
+
+// Endpoint de debug pour vérifier le statut d'une conversation
+app.get('/api/webhook/conversation/:conversationId/status', async (req, res) => {
+  try {
+    const { conversationId } = req.params;
+    const result = await analyzeConversationResult(conversationId);
+    
+    res.json({
+      success: true,
+      conversationId,
+      ...result
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
     });
   }
 });
