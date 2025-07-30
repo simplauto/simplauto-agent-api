@@ -16,7 +16,7 @@ Dans Railway, aller dans l'onglet "Variables" et ajouter :
 
 ```env
 AI_AGENT_ID=agent_3601k1d905x7e78t8dx6dvzdyk5v
-AI_AGENT_API_URL=https://api.elevenlabs.io/v1/convai/sip-trunk/outbound-call
+AI_AGENT_API_URL=https://api.elevenlabs.io/v1/convai/twilio/outbound-call
 ELEVENLABS_API_KEY=sk_e1538037fba860d9bd3564e440e47207485444ef1a3803ce
 AGENT_PHONE_NUMBER=+33977555287
 AGENT_PHONE_NUMBER_ID=phnum_9301k0xvfvj2eevbd60csa7s3xhv

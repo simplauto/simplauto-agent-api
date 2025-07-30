@@ -46,6 +46,8 @@ class AIAgentClient {
     });
 
     try {
+      console.log('Payload envoyé à ElevenLabs:', JSON.stringify(payload, null, 2));
+      
       const response = await axios.post(this.apiUrl, payload, {
         headers: {
           'xi-api-key': this.apiKey,
