@@ -258,17 +258,41 @@ app.get('/api/webhook/conversation/:conversationId/status', async (req, res) => 
   }
 });
 
+// Endpoint de test pour vérifier que le webhook arrive
+app.post('/api/webhook/post-call-test', express.json(), async (req, res) => {
+  console.log('=== WEBHOOK TEST REÇU ===');
+  console.log('Headers:', req.headers);
+  console.log('Body:', req.body);
+  console.log('========================');
+  
+  res.status(200).json({ received: true, timestamp: new Date().toISOString() });
+});
+
 // Endpoint post-call webhook d'ElevenLabs
 app.post('/api/webhook/post-call', express.raw({ type: 'application/json' }), async (req, res) => {
   try {
+    console.log('=== POST-CALL WEBHOOK REÇU ===');
+    console.log('Headers:', req.headers);
+    console.log('Body length:', req.body.length);
+    console.log('==============================');
+    
     const signature = req.headers['elevenlabs-signature'];
     const body = req.body.toString();
 
     // Vérifier la signature HMAC
-    if (!signature || !verifyElevenLabsSignature(body, signature)) {
-      console.error('Signature HMAC invalide pour le webhook ElevenLabs');
-      return res.status(401).json({ error: 'Unauthorized' });
+    if (!signature) {
+      console.error('Pas de signature ElevenLabs-Signature dans les headers');
+      return res.status(401).json({ error: 'Missing signature' });
     }
+    
+    if (!verifyElevenLabsSignature(body, signature)) {
+      console.error('Signature HMAC invalide pour le webhook ElevenLabs');
+      console.error('Signature reçue:', signature);
+      console.error('Body pour HMAC:', body.substring(0, 200));
+      return res.status(401).json({ error: 'Invalid signature' });
+    }
+    
+    console.log('✅ Signature HMAC validée');
 
     const webhookData = JSON.parse(body);
     const conversationId = webhookData.conversation_id;
