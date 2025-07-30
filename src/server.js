@@ -224,6 +224,85 @@ app.post('/api/webhook/refund-request', validateRefundRequest, async (req, res) 
   }
 });
 
+// Endpoint pour Client Tool validation_remboursement
+app.post('/api/tools/validation-remboursement', express.json(), async (req, res) => {
+  try {
+    console.log('=== CLIENT TOOL validation_remboursement APPELÉ ===');
+    console.log('Body reçu:', req.body);
+    console.log('===============================================');
+
+    // Extraire les paramètres du tool
+    const { status, motif, commentaire } = req.body;
+
+    // Validation des paramètres requis
+    if (!status) {
+      console.error('Paramètre status manquant dans le Client Tool');
+      return res.status(400).json({
+        success: false,
+        error: 'Le paramètre status est requis'
+      });
+    }
+
+    // Valider que le status est dans les valeurs attendues
+    const validStatuses = ['Accepté', 'Refusé', 'En attente de rappel'];
+    if (!validStatuses.includes(status)) {
+      console.error('Status invalide:', status);
+      return res.status(400).json({
+        success: false,
+        error: `Status doit être un de: ${validStatuses.join(', ')}`
+      });
+    }
+
+    // Construire la réponse de validation
+    const validationResult = {
+      status,
+      ...(motif && { motif }),
+      ...(commentaire && { commentaire }),
+      timestamp: new Date().toISOString(),
+      source: 'agent_validation'
+    };
+
+    console.log('Validation enregistrée:', validationResult);
+
+    // Retourner une réponse structurée pour l'agent
+    const response = {
+      success: true,
+      message: `Validation enregistrée: ${status}`,
+      data: validationResult
+    };
+
+    console.log('Réponse envoyée à ElevenLabs:', response);
+    
+    res.json(response);
+
+  } catch (error) {
+    console.error('Erreur dans le Client Tool validation_remboursement:', error.message);
+    res.status(500).json({
+      success: false,
+      error: 'Erreur interne du serveur'
+    });
+  }
+});
+
+// Endpoint de test pour le Client Tool validation_remboursement
+app.get('/api/tools/validation-remboursement', (req, res) => {
+  res.json({
+    success: true,
+    message: 'Client Tool validation_remboursement est opérationnel',
+    endpoint: '/api/tools/validation-remboursement',
+    method: 'POST',
+    expected_parameters: {
+      status: 'string (required) - Accepté, Refusé, ou En attente de rappel',
+      motif: 'string (optional) - Motif du refus si applicable',
+      commentaire: 'string (optional) - Commentaire additionnel'
+    },
+    example_request: {
+      status: 'Accepté',
+      commentaire: 'Remboursement validé par le centre'
+    }
+  });
+});
+
 // Note: L'ancien système de monitoring a été remplacé par le webhook post-call d'ElevenLabs
 
 // Endpoint de debug pour vérifier le statut d'une conversation
