@@ -47,16 +47,40 @@ const ELEVENLABS_WEBHOOK_SECRET = process.env.ELEVENLABS_WEBHOOK_SECRET || 'wsec
 // Fonction pour vérifier la signature HMAC d'ElevenLabs
 function verifyElevenLabsSignature(body, signature) {
   try {
-    const expectedSignature = crypto
-      .createHmac('sha256', ELEVENLABS_WEBHOOK_SECRET)
-      .update(body, 'utf8')
-      .digest('hex');
+    // Support des deux formats : "sha256=hash" et "t=timestamp,v0=hash"
+    let receivedSignature;
+    let timestamp;
     
-    const receivedSignature = signature.replace('sha256=', '');
-    return crypto.timingSafeEqual(
-      Buffer.from(expectedSignature, 'hex'),
-      Buffer.from(receivedSignature, 'hex')
-    );
+    if (signature.includes('t=') && signature.includes('v0=')) {
+      // Format ElevenLabs: t=timestamp,v0=hash
+      const parts = signature.split(',');
+      timestamp = parts.find(p => p.startsWith('t=')).replace('t=', '');
+      receivedSignature = parts.find(p => p.startsWith('v0=')).replace('v0=', '');
+      
+      // Créer le payload à signer : timestamp.body
+      const payloadToSign = `${timestamp}.${body}`;
+      const expectedSignature = crypto
+        .createHmac('sha256', ELEVENLABS_WEBHOOK_SECRET)
+        .update(payloadToSign, 'utf8')
+        .digest('hex');
+        
+      return crypto.timingSafeEqual(
+        Buffer.from(expectedSignature, 'hex'),
+        Buffer.from(receivedSignature, 'hex')
+      );
+    } else {
+      // Format classique: sha256=hash
+      const expectedSignature = crypto
+        .createHmac('sha256', ELEVENLABS_WEBHOOK_SECRET)
+        .update(body, 'utf8')
+        .digest('hex');
+      
+      receivedSignature = signature.replace('sha256=', '');
+      return crypto.timingSafeEqual(
+        Buffer.from(expectedSignature, 'hex'),
+        Buffer.from(receivedSignature, 'hex')
+      );
+    }
   } catch (error) {
     console.error('Erreur lors de la vérification HMAC:', error.message);
     return false;
