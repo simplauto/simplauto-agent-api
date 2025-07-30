@@ -71,13 +71,14 @@ function analyzeTranscriptWithLLM(transcript) {
   }).join('\n').toLowerCase();
 
   console.log('Transcript à analyser:', fullTranscript);
+  console.log('Transcript détaillé:', transcript.map(msg => `${msg.role}: "${msg.message}"`));
 
   // Analyse structurée du transcript
   let status = 'En attente de rappel';
   let reason = null;
 
-  // Détecter les acceptations
-  if (fullTranscript.includes('oui') && (fullTranscript.includes('valide') || fullTranscript.includes('accord') || fullTranscript.includes('remboursement'))) {
+  // Détecter les acceptations (être plus strict)
+  if (fullTranscript.includes('oui') && (fullTranscript.includes('valide le remboursement') || fullTranscript.includes('accord') || fullTranscript.includes('je valide'))) {
     status = 'Accepté';
   }
   // Détecter les refus avec patterns améliorés
