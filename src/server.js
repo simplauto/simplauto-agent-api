@@ -459,18 +459,34 @@ app.post('/api/webhook/post-call', express.raw({ type: 'application/json' }), as
     // Analyser le transcript pour obtenir le statut et motif
     const transcript = eventData.transcript || [];
     
-    // Récupérer les données du webhook tool depuis le cache
-    const storedToolResult = toolResults.get(conversationId);
+    // Chercher les données du webhook tool dans les tool_results du transcript
+    let toolData = null;
+    for (const turn of transcript) {
+      if (turn.tool_results) {
+        for (const toolResult of turn.tool_results) {
+          if (toolResult.tool_name === 'validation_remboursement' && toolResult.result_value) {
+            try {
+              const resultValue = JSON.parse(toolResult.result_value);
+              if (resultValue.data) {
+                toolData = resultValue.data;
+                console.log('✅ Données du webhook tool trouvées dans tool_results:', toolData);
+                break;
+              }
+            } catch (e) {
+              console.warn('Erreur parsing tool result_value:', e.message);
+            }
+          }
+        }
+      }
+      if (toolData) break;
+    }
     
     // Utiliser les données du tool si disponibles, sinon analyser le transcript
     let status, reason;
-    if (storedToolResult) {
-      status = storedToolResult.statut;
-      reason = storedToolResult.motif || null;
-      console.log('✅ Utilisation des données du webhook tool stockées:', { status, reason });
-      
-      // Supprimer les données du cache après utilisation
-      toolResults.delete(conversationId);
+    if (toolData && toolData.statut) {
+      status = toolData.statut;
+      reason = toolData.motif || null;
+      console.log('✅ Utilisation des données exactes du webhook tool:', { status, reason });
     } else {
       const analyzed = analyzeTranscriptWithLLM(transcript);
       status = analyzed.status;
