@@ -147,10 +147,20 @@ async function summarizeRefundMotive(messages) {
 Conversation:
 ${messageText}
 
-Analyse cette conversation et si le client demande un remboursement, résume en 1-2 phrases courtes et claires le motif de sa demande. Si ce n'est pas une demande de remboursement, réponds "Aucune demande de remboursement détectée".
+INSTRUCTION IMPORTANTE : Cherche uniquement dans cette conversation l'explication que donne le client pour justifier sa demande de remboursement. Ignore tout le reste de la conversation (salutations, demandes d'informations, etc.).
 
-Exemple de réponse: "Le client n'a pas pu se présenter au rendez-vous car sa voiture est tombée en panne sur la route."`;
+Si le client explique pourquoi il demande un remboursement, résume UNIQUEMENT cette explication en 1 phrase courte et claire.
+Si aucune explication de motif de remboursement n'est donnée, réponds "Aucune explication fournie".
 
+Exemples de bonnes réponses:
+- "Sa voiture est tombée en panne sur la route"
+- "Il a eu un problème de santé" 
+- "Il n'a pas pu se libérer du travail"
+- "Le centre était fermé à son arrivée"
+
+NE PAS inclure: les détails administratifs, les salutations, les demandes d'informations du support.`;
+
+    console.log('📝 Texte des messages à analyser par Claude:', messageText);
     console.log('🤖 Envoi à Claude API pour analyse...');
     
     const response = await axios.post('https://api.anthropic.com/v1/messages', {
