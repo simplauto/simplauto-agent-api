@@ -402,11 +402,11 @@ app.post('/api/webhook/post-call', express.raw({ type: 'application/json' }), as
     console.log('🔍 DEBUG - Webhook data complet:', JSON.stringify(webhookData, null, 2));
     
     const conversationId = webhookData.conversation_id || webhookData.conversationId || webhookData.id;
-    const status = webhookData.status || webhookData.call_status || webhookData.state;
+    const webhookStatus = webhookData.status || webhookData.call_status || webhookData.state;
 
     console.log('Webhook post-call reçu:', {
       conversationId,
-      status,
+      status: webhookStatus,
       availableKeys: Object.keys(webhookData)
     });
 
@@ -445,7 +445,7 @@ app.post('/api/webhook/post-call', express.raw({ type: 'application/json' }), as
       call_status = 'no_answer';
     } else if (transcript.some(msg => msg.message && msg.message.toLowerCase().includes('voicemail'))) {
       call_status = 'voicemail';
-    } else if (webhookData.status === 'failed') {
+    } else if (webhookStatus === 'failed') {
       call_status = 'failed';
     }
 
