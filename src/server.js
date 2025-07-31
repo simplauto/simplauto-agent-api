@@ -378,7 +378,7 @@ app.post('/api/webhook/post-call', express.raw({ type: 'application/json' }), as
     console.log('==============================');
     
     const signature = req.headers['elevenlabs-signature'];
-    const body = req.body.toString();
+    const body = Buffer.isBuffer(req.body) ? req.body.toString('utf8') : JSON.stringify(req.body);
 
     // TEMPORAIRE : Validation HMAC désactivée pour debug
     console.log('🔍 DEBUG - Signature reçue:', signature);
