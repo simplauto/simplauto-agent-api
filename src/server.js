@@ -399,11 +399,15 @@ app.post('/api/webhook/post-call', express.raw({ type: 'application/json' }), as
     }
 
     const webhookData = JSON.parse(body);
-    const conversationId = webhookData.conversation_id;
+    console.log('🔍 DEBUG - Webhook data complet:', JSON.stringify(webhookData, null, 2));
+    
+    const conversationId = webhookData.conversation_id || webhookData.conversationId || webhookData.id;
+    const status = webhookData.status || webhookData.call_status || webhookData.state;
 
     console.log('Webhook post-call reçu:', {
       conversationId,
-      status: webhookData.status
+      status,
+      availableKeys: Object.keys(webhookData)
     });
 
     // Récupérer les données de conversation depuis le cache ou les dynamic variables
