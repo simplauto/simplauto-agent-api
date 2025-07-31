@@ -38,6 +38,9 @@ const aiClient = new AIAgentClient(aiAgentConfig);
 // Stockage en mémoire des conversations en cours
 const activeConversations = new Map();
 
+// Stockage des résultats du webhook tool validation_remboursement
+const toolResults = new Map();
+
 // Configuration webhook Make.com
 const MAKE_WEBHOOK_URL = 'https://hook.eu1.make.com/nsdyueym7xwbj1waaia3jrbjolanjelu';
 
@@ -248,10 +251,11 @@ app.post('/api/webhook/refund-request', validateRefundRequest, async (req, res) 
   }
 });
 
-// Endpoint pour Client Tool validation_remboursement
+// Endpoint pour webhook tool validation_remboursement
 app.post('/api/tools/validation-remboursement', express.json(), async (req, res) => {
   try {
-    console.log('=== CLIENT TOOL validation_remboursement APPELÉ ===');
+    console.log('=== WEBHOOK TOOL validation_remboursement APPELÉ ===');
+    console.log('Headers:', req.headers);
     console.log('Body reçu:', req.body);
     console.log('===============================================');
 
@@ -295,6 +299,23 @@ app.post('/api/tools/validation-remboursement', express.json(), async (req, res)
     };
 
     console.log('Réponse envoyée à ElevenLabs:', response);
+    
+    // Essayer de récupérer le conversationId depuis les headers ElevenLabs
+    const conversationId = req.headers['x-conversation-id'] || req.headers['conversation-id'] || req.headers['xi-conversation-id'];
+    
+    if (conversationId) {
+      // Stocker le résultat du tool pour l'utiliser dans le post-call webhook
+      toolResults.set(conversationId, {
+        statut,
+        motif,
+        timestamp: new Date().toISOString(),
+        source: 'webhook_tool'
+      });
+      console.log('✅ Résultat du tool stocké pour conversation:', conversationId);
+    } else {
+      console.warn('⚠️ Impossible de récupérer le conversationId depuis les headers');
+      console.log('Headers disponibles:', Object.keys(req.headers));
+    }
     
     res.json(response);
 
@@ -438,36 +459,23 @@ app.post('/api/webhook/post-call', express.raw({ type: 'application/json' }), as
     // Analyser le transcript pour obtenir le statut et motif
     const transcript = eventData.transcript || [];
     
-    // D'abord, chercher les données du webhook tool validation_remboursement
-    let toolData = null;
-    for (const turn of transcript) {
-      if (turn.tool_calls) {
-        for (const toolCall of turn.tool_calls) {
-          if (toolCall.tool_name === 'validation_remboursement' && toolCall.body) {
-            try {
-              toolData = JSON.parse(toolCall.body);
-              console.log('✅ Données du webhook tool trouvées:', toolData);
-              break;
-            } catch (e) {
-              console.warn('Erreur parsing tool data:', e.message);
-            }
-          }
-        }
-      }
-      if (toolData) break;
-    }
+    // Récupérer les données du webhook tool depuis le cache
+    const storedToolResult = toolResults.get(conversationId);
     
     // Utiliser les données du tool si disponibles, sinon analyser le transcript
     let status, reason;
-    if (toolData && toolData.statut) {
-      status = toolData.statut;
-      reason = toolData.motif || null;
-      console.log('✅ Utilisation des données du webhook tool:', { status, reason });
+    if (storedToolResult) {
+      status = storedToolResult.statut;
+      reason = storedToolResult.motif || null;
+      console.log('✅ Utilisation des données du webhook tool stockées:', { status, reason });
+      
+      // Supprimer les données du cache après utilisation
+      toolResults.delete(conversationId);
     } else {
       const analyzed = analyzeTranscriptWithLLM(transcript);
       status = analyzed.status;
       reason = analyzed.reason;
-      console.log('⚠️ Fallback vers analyse automatique:', { status, reason });
+      console.log('⚠️ Fallback vers analyse automatique (pas de données tool):', { status, reason });
     }
 
     // Déterminer le call_status
@@ -485,8 +493,7 @@ app.post('/api/webhook/post-call', express.raw({ type: 'application/json' }), as
     // Créer la réponse de remboursement
     const refund_response = call_status === 'answered' ? {
       status,
-      ...(reason && { reason }),
-      comment: `Conversation analysée automatiquement`
+      ...(reason && { reason })
     } : null;
 
     console.log('Analyse de la conversation:', {
@@ -547,9 +554,18 @@ app.get('/api/debug/conversations', (req, res) => {
     age_minutes: Math.round((Date.now() - data.timestamp) / 60000)
   }));
 
+  const toolResultsArray = Array.from(toolResults.entries()).map(([id, data]) => ({
+    conversationId: id,
+    statut: data.statut,
+    motif: data.motif,
+    timestamp: data.timestamp
+  }));
+
   res.json({
     active_conversations: conversations,
     total_count: conversations.length,
+    tool_results: toolResultsArray,
+    tool_results_count: toolResultsArray.length,
     webhook_secret_configured: !!process.env.ELEVENLABS_WEBHOOK_SECRET
   });
 });
