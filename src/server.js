@@ -154,7 +154,7 @@ Exemple de réponse: "Le client n'a pas pu se présenter au rendez-vous car sa v
     console.log('🤖 Envoi à Claude API pour analyse...');
     
     const response = await axios.post('https://api.anthropic.com/v1/messages', {
-      model: 'claude-3-sonnet-20240229',
+      model: 'claude-3-haiku-20240307',
       max_tokens: 150,
       messages: [
         {
@@ -176,6 +176,13 @@ Exemple de réponse: "Le client n'a pas pu se présenter au rendez-vous car sa v
     return summary || null;
   } catch (error) {
     console.error('❌ Erreur résumé Claude:', error.message);
+    console.error('Status:', error.response?.status);
+    console.error('Response data:', error.response?.data);
+    console.error('Headers sent:', {
+      'x-api-key': CLAUDE_API_KEY ? 'présente' : 'manquante',
+      'Content-Type': 'application/json',
+      'anthropic-version': '2023-06-01'
+    });
     return null;
   }
 }
