@@ -84,6 +84,11 @@ async function searchCrispConversations(email) {
     const conversations = response.data?.data || [];
     console.log(`✅ Trouvé ${conversations.length} conversation(s) pour ${email}`);
     
+    // Log détaillé des conversations trouvées
+    if (conversations.length > 0) {
+      console.log('📋 Détails des conversations:', JSON.stringify(conversations, null, 2));
+    }
+    
     return conversations;
   } catch (error) {
     console.error('❌ Erreur recherche Crisp:', error.message);
@@ -103,7 +108,15 @@ async function getCrispMessages(sessionId) {
       }
     });
 
-    return response.data?.data || [];
+    const messages = response.data?.data || [];
+    console.log(`✅ Trouvé ${messages.length} message(s) pour session ${sessionId}`);
+    
+    // Log détaillé des messages
+    if (messages.length > 0) {
+      console.log('💬 Premiers messages:', JSON.stringify(messages.slice(0, 3), null, 2));
+    }
+    
+    return messages;
   } catch (error) {
     console.error('❌ Erreur récupération messages Crisp:', error.message);
     return [];
@@ -138,6 +151,8 @@ Analyse cette conversation et si le client demande un remboursement, résume en 
 
 Exemple de réponse: "Le client n'a pas pu se présenter au rendez-vous car sa voiture est tombée en panne sur la route."`;
 
+    console.log('🤖 Envoi à Claude API pour analyse...');
+    
     const response = await axios.post('https://api.anthropic.com/v1/messages', {
       model: 'claude-3-sonnet-20240229',
       max_tokens: 150,
@@ -149,9 +164,8 @@ Exemple de réponse: "Le client n'a pas pu se présenter au rendez-vous car sa v
       ]
     }, {
       headers: {
-        'Authorization': `Bearer ${CLAUDE_API_KEY}`,
-        'Content-Type': 'application/json',
         'x-api-key': CLAUDE_API_KEY,
+        'Content-Type': 'application/json',
         'anthropic-version': '2023-06-01'
       }
     });
