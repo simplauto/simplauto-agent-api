@@ -401,8 +401,10 @@ app.post('/api/webhook/post-call', express.raw({ type: 'application/json' }), as
     const webhookData = JSON.parse(body);
     console.log('🔍 DEBUG - Webhook data complet:', JSON.stringify(webhookData, null, 2));
     
-    const conversationId = webhookData.conversation_id || webhookData.conversationId || webhookData.id;
-    const webhookStatus = webhookData.status || webhookData.call_status || webhookData.state;
+    // Les données ElevenLabs sont dans le champ 'data'
+    const eventData = webhookData.data || webhookData;
+    const conversationId = eventData.conversation_id || eventData.conversationId || eventData.id;
+    const webhookStatus = eventData.status || eventData.call_status || eventData.state;
 
     console.log('Webhook post-call reçu:', {
       conversationId,
@@ -417,7 +419,7 @@ app.post('/api/webhook/post-call', express.raw({ type: 'application/json' }), as
       console.log('Conversation non trouvée dans le cache, récupération depuis ElevenLabs:', conversationId);
       
       // Récupérer depuis les dynamic variables d'ElevenLabs
-      const dynamicVars = webhookData.conversation_initiation_client_data?.dynamic_variables;
+      const dynamicVars = eventData.conversation_initiation_client_data?.dynamic_variables;
       if (dynamicVars && dynamicVars.reference) {
         conversationData = {
           reference: dynamicVars.reference,
@@ -434,12 +436,12 @@ app.post('/api/webhook/post-call', express.raw({ type: 'application/json' }), as
     }
 
     // Analyser le transcript pour obtenir le statut et motif
-    const transcript = webhookData.transcript || [];
+    const transcript = eventData.transcript || [];
     const { status, reason } = analyzeTranscriptWithLLM(transcript);
 
     // Déterminer le call_status
     let call_status = 'answered';
-    const callDuration = webhookData.metadata?.call_duration_secs || 0;
+    const callDuration = eventData.metadata?.call_duration_secs || 0;
     
     if (callDuration < 5 && transcript.length === 0) {
       call_status = 'no_answer';
