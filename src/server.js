@@ -437,7 +437,38 @@ app.post('/api/webhook/post-call', express.raw({ type: 'application/json' }), as
 
     // Analyser le transcript pour obtenir le statut et motif
     const transcript = eventData.transcript || [];
-    const { status, reason } = analyzeTranscriptWithLLM(transcript);
+    
+    // D'abord, chercher les données du webhook tool validation_remboursement
+    let toolData = null;
+    for (const turn of transcript) {
+      if (turn.tool_calls) {
+        for (const toolCall of turn.tool_calls) {
+          if (toolCall.tool_name === 'validation_remboursement' && toolCall.body) {
+            try {
+              toolData = JSON.parse(toolCall.body);
+              console.log('✅ Données du webhook tool trouvées:', toolData);
+              break;
+            } catch (e) {
+              console.warn('Erreur parsing tool data:', e.message);
+            }
+          }
+        }
+      }
+      if (toolData) break;
+    }
+    
+    // Utiliser les données du tool si disponibles, sinon analyser le transcript
+    let status, reason;
+    if (toolData && toolData.statut) {
+      status = toolData.statut;
+      reason = toolData.motif || null;
+      console.log('✅ Utilisation des données du webhook tool:', { status, reason });
+    } else {
+      const analyzed = analyzeTranscriptWithLLM(transcript);
+      status = analyzed.status;
+      reason = analyzed.reason;
+      console.log('⚠️ Fallback vers analyse automatique:', { status, reason });
+    }
 
     // Déterminer le call_status
     let call_status = 'answered';
