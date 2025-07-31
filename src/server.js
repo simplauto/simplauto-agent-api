@@ -35,6 +35,16 @@ if (missingVars.length > 0) {
 
 const aiClient = new AIAgentClient(aiAgentConfig);
 
+// Configuration Crisp
+const CRISP_CONFIG = {
+  identifier: process.env.CRISP_IDENTIFIER,
+  key: process.env.CRISP_KEY,
+  websiteId: process.env.CRISP_WEBSITE_ID
+};
+
+// Configuration Claude
+const CLAUDE_API_KEY = process.env.CLAUDE_API_KEY;
+
 // Stockage en mémoire des conversations en cours
 const activeConversations = new Map();
 
@@ -46,6 +56,115 @@ const MAKE_WEBHOOK_URL = 'https://hook.eu1.make.com/nsdyueym7xwbj1waaia3jrbjolan
 
 // Configuration ElevenLabs webhook
 const ELEVENLABS_WEBHOOK_SECRET = process.env.ELEVENLABS_WEBHOOK_SECRET || 'wsec_83ee0abb9a7c7f991ef33083a8db240e887acb1dcac08cf36b82fe62c4083c9b';
+
+// Fonction pour chercher les conversations Crisp par email
+async function searchCrispConversations(email) {
+  try {
+    if (!CRISP_CONFIG.identifier || !CRISP_CONFIG.key || !CRISP_CONFIG.websiteId) {
+      console.warn('⚠️ Configuration Crisp manquante');
+      return null;
+    }
+
+    const auth = Buffer.from(`${CRISP_CONFIG.identifier}:${CRISP_CONFIG.key}`).toString('base64');
+    
+    console.log('🔍 Recherche conversations Crisp pour:', email);
+    
+    // Chercher les conversations avec l'email
+    const response = await axios.get(`https://api.crisp.chat/v1/website/${CRISP_CONFIG.websiteId}/conversations/1`, {
+      headers: {
+        'Authorization': `Basic ${auth}`,
+        'X-Crisp-Tier': 'plugin'
+      },
+      params: {
+        search_query: email,
+        search_type: 'text'
+      }
+    });
+
+    const conversations = response.data?.data || [];
+    console.log(`✅ Trouvé ${conversations.length} conversation(s) pour ${email}`);
+    
+    return conversations;
+  } catch (error) {
+    console.error('❌ Erreur recherche Crisp:', error.message);
+    return null;
+  }
+}
+
+// Fonction pour récupérer les messages d'une conversation Crisp
+async function getCrispMessages(sessionId) {
+  try {
+    const auth = Buffer.from(`${CRISP_CONFIG.identifier}:${CRISP_CONFIG.key}`).toString('base64');
+    
+    const response = await axios.get(`https://api.crisp.chat/v1/website/${CRISP_CONFIG.websiteId}/conversation/${sessionId}/messages`, {
+      headers: {
+        'Authorization': `Basic ${auth}`,
+        'X-Crisp-Tier': 'plugin'
+      }
+    });
+
+    return response.data?.data || [];
+  } catch (error) {
+    console.error('❌ Erreur récupération messages Crisp:', error.message);
+    return [];
+  }
+}
+
+// Fonction pour résumer le motif de remboursement avec Claude
+async function summarizeRefundMotive(messages) {
+  try {
+    if (!CLAUDE_API_KEY) {
+      console.warn('⚠️ Clé Claude API manquante');
+      return null;
+    }
+
+    // Construire le contexte des messages
+    const messageText = messages
+      .filter(msg => msg.content && msg.type === 'text')
+      .map(msg => `${msg.from === 'user' ? 'Client' : 'Support'}: ${msg.content}`)
+      .join('\n');
+
+    if (!messageText.trim()) {
+      console.log('⚠️ Pas de messages texte trouvés');
+      return null;
+    }
+
+    const prompt = `Voici une conversation de support client Simplauto (plateforme de réservation de contrôles techniques).
+
+Conversation:
+${messageText}
+
+Analyse cette conversation et si le client demande un remboursement, résume en 1-2 phrases courtes et claires le motif de sa demande. Si ce n'est pas une demande de remboursement, réponds "Aucune demande de remboursement détectée".
+
+Exemple de réponse: "Le client n'a pas pu se présenter au rendez-vous car sa voiture est tombée en panne sur la route."`;
+
+    const response = await axios.post('https://api.anthropic.com/v1/messages', {
+      model: 'claude-3-sonnet-20240229',
+      max_tokens: 150,
+      messages: [
+        {
+          role: 'user',
+          content: prompt
+        }
+      ]
+    }, {
+      headers: {
+        'Authorization': `Bearer ${CLAUDE_API_KEY}`,
+        'Content-Type': 'application/json',
+        'x-api-key': CLAUDE_API_KEY,
+        'anthropic-version': '2023-06-01'
+      }
+    });
+
+    const summary = response.data?.content?.[0]?.text?.trim();
+    console.log('✅ Résumé Claude:', summary);
+    
+    return summary || null;
+  } catch (error) {
+    console.error('❌ Erreur résumé Claude:', error.message);
+    return null;
+  }
+}
 
 // Fonction pour vérifier la signature HMAC d'ElevenLabs
 function verifyElevenLabsSignature(body, signature) {
@@ -156,6 +275,7 @@ const validateRefundRequest = (req, res, next) => {
   if (!booking.date) missingFields.push('booking.date');
   if (!center.phone && !center.affiliated_phone) missingFields.push('center.phone ou center.affiliated_phone');
   
+  // customer.email est optionnel pour Crisp
   // booking.backoffice_url est optionnel pour la rétrocompatibilité
 
   if (missingFields.length > 0) {
@@ -183,6 +303,23 @@ app.post('/api/webhook/refund-request', validateRefundRequest, async (req, res) 
     const rawPhoneNumber = center.phone || center.affiliated_phone;
     const normalizedPhone = normalizeFrenchPhoneNumber(rawPhoneNumber);
 
+    // Récupérer l'explication du client depuis Crisp
+    let customerExplanation = null;
+    if (customer.email) {
+      console.log('📧 Email client détecté, recherche Crisp...', customer.email);
+      
+      const conversations = await searchCrispConversations(customer.email);
+      if (conversations && conversations.length > 0) {
+        // Prendre la conversation la plus récente
+        const latestConversation = conversations[0];
+        const messages = await getCrispMessages(latestConversation.session_id);
+        
+        if (messages.length > 0) {
+          customerExplanation = await summarizeRefundMotive(messages);
+        }
+      }
+    }
+
     const refundRequest = {
       reference: order.reference,
       nom_client: `${customer.first_name} ${customer.last_name}`,
@@ -191,7 +328,8 @@ app.post('/api/webhook/refund-request', validateRefundRequest, async (req, res) 
       modele_vehicule: vehicule.model,
       immatriculation: vehicule.registration_number,
       telephone_centre: normalizedPhone,
-      backoffice_url: booking.backoffice_url
+      backoffice_url: booking.backoffice_url,
+      explication_client: customerExplanation
     };
 
     console.log('Demande de remboursement reçue:', {
