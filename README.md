@@ -139,6 +139,13 @@ Tous les formats français sont automatiquement normalisés (centre ET client) :
 - `GET /api/debug/conversations` - Debug des conversations actives  
 - `GET /api/webhook/conversation/:id/status` - Statut d'une conversation
 
+### Tests et Debug
+- `POST /api/test/webhook` - Simuler webhook sans appel réel
+- `POST /api/test/call-result/:id` - Simuler résultat d'appel
+- `POST /api/test/scenarios` - Scénarios prédéfinis (callback_loop, technical_failures, mixed_results)
+
+> 📖 **Guide complet des tests :** Voir [TESTING.md](./TESTING.md) pour tous les détails
+
 ### Integration Make.com
 - Callback automatique vers `https://hook.eu1.make.com/nsdyueym7xwbj1waaia3jrbjolanjelu`
 - Format de retour :
@@ -183,3 +190,137 @@ src/
 - **Make.com** : Workflow automation pour traiter les résultats
 
 Simple, intelligent, entièrement automatisé.
+
+## Tests et Validation
+
+### Tests Unitaires
+
+Le projet inclut une suite de tests complète pour valider la logique métier :
+
+```bash
+# Lancer tous les tests
+npm test
+
+# Mode watch (redémarre automatiquement)
+npm run test:watch
+
+# Rapport de couverture
+npm run test:coverage
+```
+
+**Tests inclus :**
+- **businessHours.test.js** : Logique horaires français (9h-12h, 14h-17h)
+- **queueManager.test.js** : File d'attente, rappels, retry
+- **integration.test.js** : Workflow complet end-to-end
+
+### Endpoints de Test (Sans Appels Réels)
+
+Pour tester le système sans faire de vrais appels téléphoniques :
+
+#### 1. Test Webhook Basique
+
+```bash
+curl -X POST "https://simplauto-agent-api-production2.up.railway.app/api/test/webhook" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "test@example.com",
+    "phone": "0123456789",
+    "force_queue": true
+  }'
+```
+
+**Réponse :**
+```json
+{
+  "success": true,
+  "message": "Test - Demande ajoutée à la file d'attente",
+  "queue_id": "uuid-1234",
+  "scheduled_for": "2025-07-29T09:00:00Z",
+  "test_mode": true
+}
+```
+
+#### 2. Simuler un Résultat d'Appel
+
+```bash
+curl -X POST "https://simplauto-agent-api-production2.up.railway.app/api/test/call-result/uuid-1234" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "result": "En attente de rappel",
+    "call_status": "answered",
+    "reason": "Centre occupé"
+  }'
+```
+
+**Résultats possibles :**
+- `"Accepté"` : Remboursement accordé ✅
+- `"Refusé"` : Remboursement refusé ❌
+- `"En attente de rappel"` : Centre demande rappel 🔄
+- `"no_answer"` : Pas de réponse 📞
+- `"voicemail"` : Messagerie vocale 📧
+- `"failed"` : Erreur technique ⚠️
+
+#### 3. Scénarios de Test Automatiques
+
+```bash
+# Boucle de 3 rappels jusqu'à échec
+curl -X POST "https://simplauto-agent-api-production2.up.railway.app/api/test/scenarios" \
+  -H "Content-Type: application/json" \
+  -d '{"scenario": "callback_loop"}'
+
+# 3 échecs techniques successifs
+curl -X POST "https://simplauto-agent-api-production2.up.railway.app/api/test/scenarios" \
+  -H "Content-Type: application/json" \
+  -d '{"scenario": "technical_failures"}'
+
+# Résultats mixtes (accepté, refusé, callback)
+curl -X POST "https://simplauto-agent-api-production2.up.railway.app/api/test/scenarios" \
+  -H "Content-Type: application/json" \
+  -d '{"scenario": "mixed_results"}'
+```
+
+### Monitoring de la File d'Attente
+
+```bash
+# Statut général
+curl "https://simplauto-agent-api-production2.up.railway.app/api/queue/status"
+
+# Prochaine heure d'ouverture
+curl "https://simplauto-agent-api-production2.up.railway.app/api/queue/next-business-hours"
+
+# Forcer le traitement (debug)
+curl -X POST "https://simplauto-agent-api-production2.up.railway.app/api/queue/process"
+```
+
+### Exemple de Workflow de Test Complet
+
+1. **Ajouter une demande hors horaires :**
+```bash
+curl -X POST ".../api/test/webhook" -d '{"force_queue": true}'
+# → Retourne queue_id
+```
+
+2. **Vérifier le statut :**
+```bash
+curl ".../api/queue/status"
+# → pending: 1
+```
+
+3. **Simuler un callback :**
+```bash
+curl -X POST ".../api/test/call-result/QUEUE_ID" -d '{"result": "En attente de rappel"}'
+# → status: "rescheduled", next_attempt: "..."
+```
+
+4. **Répéter jusqu'à résolution :**
+```bash
+curl -X POST ".../api/test/call-result/NEW_QUEUE_ID" -d '{"result": "Accepté"}'
+# → status: "completed"
+```
+
+### Validation des Horaires
+
+Le système respecte automatiquement les horaires français :
+- **Lundi à Vendredi** : 9h-12h et 14h-17h (Europe/Paris)
+- **Weekend** : Aucun traitement
+- **Hors horaires** : Mise en file d'attente automatique
