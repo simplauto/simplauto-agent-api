@@ -1024,6 +1024,266 @@ app.post('/api/queue/cleanup', async (req, res) => {
   }
 });
 
+// Endpoints de test pour simuler des scénarios
+
+// Test webhook avec données fictives (sans appel réel)
+app.post('/api/test/webhook', async (req, res) => {
+  try {
+    const testData = {
+      booking: {
+        date: "2025-07-28T15:30:00Z",
+        backoffice_url: "https://www.simplauto.com/backoffice/test-" + Date.now()
+      },
+      order: {
+        reference: "TEST" + Math.random().toString(36).substr(2, 6).toUpperCase()
+      },
+      customer: {
+        first_name: "Test",
+        last_name: "User",
+        email: req.body.email || "test@simplauto.com",
+        phone: req.body.phone || "0123456789"
+      },
+      vehicule: {
+        brand: "Peugeot",
+        model: "308",
+        registration_number: "AB-123-CD"
+      },
+      center: {
+        phone: "0987654321"
+      }
+    };
+
+    // Simuler le comportement du webhook principal mais sans appel réel
+    console.log('🧪 Test webhook reçu:', {
+      reference: testData.order.reference,
+      business_hours: isBusinessHours(),
+      force_queue: req.body.force_queue
+    });
+
+    // Forcer l'ajout à la file si demandé, sinon suivre la logique normale
+    const shouldQueue = req.body.force_queue || !isBusinessHours();
+
+    if (shouldQueue) {
+      console.log('⏰ Test - Ajout à la file d\'attente');
+      
+      const queueResult = await addToQueue(testData);
+      const nextBusinessTime = getNextBusinessTime();
+      
+      res.json({
+        success: true,
+        message: 'Test - Demande ajoutée à la file d\'attente',
+        queue_id: queueResult.id,
+        scheduled_for: queueResult.scheduled_for,
+        next_business_hours: formatBusinessTime(nextBusinessTime),
+        processed: 'queued',
+        test_mode: true
+      });
+    } else {
+      // Simuler un appel réussi
+      const fakeConversationId = 'test_conv_' + Date.now();
+      
+      res.json({
+        success: true,
+        message: 'Test - Appel téléphonique simulé avec succès',
+        conversationId: fakeConversationId,
+        processed: 'immediately',
+        test_mode: true
+      });
+    }
+
+  } catch (error) {
+    console.error('Erreur test webhook:', error.message);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      test_mode: true
+    });
+  }
+});
+
+// Simuler un résultat d'appel pour un item de la file
+app.post('/api/test/call-result/:queueId', async (req, res) => {
+  try {
+    const { queueId } = req.params;
+    const { result, call_status = 'answered', reason } = req.body;
+
+    if (!result) {
+      return res.status(400).json({
+        success: false,
+        error: 'Le champ result est requis',
+        valid_results: ['Accepté', 'Refusé', 'En attente de rappel', 'no_answer', 'voicemail', 'failed']
+      });
+    }
+
+    console.log('🧪 Test résultat d\'appel:', {
+      queueId,
+      result,
+      call_status
+    });
+
+    const callResult = {
+      conversationId: 'test_conv_' + Date.now(),
+      call_status,
+      result,
+      reason
+    };
+
+    const updateResult = await updateCallResult(queueId, callResult);
+
+    res.json({
+      success: true,
+      message: 'Test - Résultat d\'appel simulé',
+      queue_status: updateResult.status,
+      ...(updateResult.next_attempt && { next_attempt: updateResult.next_attempt }),
+      item_history: updateResult.item.history,
+      test_mode: true
+    });
+
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      test_mode: true
+    });
+  }
+});
+
+// Simuler différents scénarios de test
+app.post('/api/test/scenarios', async (req, res) => {
+  try {
+    const { scenario } = req.body;
+    
+    const scenarios = {
+      'callback_loop': async () => {
+        // Créer un item et simuler 3 callbacks
+        const queueResult = await addToQueue({
+          booking: { date: "2025-07-28T15:30:00Z" },
+          order: { reference: "CALLBACK_TEST" },
+          customer: { first_name: "Callback", last_name: "Test", email: "callback@test.com" },
+          vehicule: { brand: "Test", model: "Car", registration_number: "CB-123-TEST" },
+          center: { phone: "0123456789" }
+        });
+
+        let itemId = queueResult.id;
+        const results = [];
+
+        for (let i = 1; i <= 3; i++) {
+          await markAsProcessing(itemId);
+          const result = await updateCallResult(itemId, {
+            conversationId: `callback_${i}`,
+            call_status: 'answered',
+            result: 'En attente de rappel'
+          });
+          
+          results.push({
+            attempt: i,
+            status: result.status,
+            next_attempt: result.next_attempt
+          });
+
+          if (result.status === 'rescheduled') {
+            // Récupérer le nouvel ID
+            const stats = await getQueueStats();
+            itemId = stats.next_items[0]?.id;
+          }
+        }
+
+        return { scenario: 'callback_loop', results };
+      },
+
+      'technical_failures': async () => {
+        // Créer un item et simuler 3 échecs techniques
+        const queueResult = await addToQueue({
+          booking: { date: "2025-07-28T15:30:00Z" },
+          order: { reference: "TECH_FAIL_TEST" },
+          customer: { first_name: "TechFail", last_name: "Test", email: "techfail@test.com" },
+          vehicule: { brand: "Test", model: "Car", registration_number: "TF-123-TEST" },
+          center: { phone: "0123456789" }
+        });
+
+        let itemId = queueResult.id;
+        const results = [];
+
+        for (let i = 1; i <= 3; i++) {
+          await markAsProcessing(itemId);
+          const result = await updateCallResult(itemId, {
+            conversationId: null,
+            call_status: 'no_answer',
+            result: 'no_answer'
+          });
+          
+          results.push({
+            attempt: i,
+            status: result.status,
+            next_attempt: result.next_attempt
+          });
+
+          if (result.status === 'rescheduled') {
+            const stats = await getQueueStats();
+            itemId = stats.next_items[0]?.id;
+          }
+        }
+
+        return { scenario: 'technical_failures', results };
+      },
+
+      'mixed_results': async () => {
+        // Créer plusieurs items avec différents résultats
+        const items = [];
+        
+        for (const [index, result] of [['Accepté'], ['Refusé'], ['En attente de rappel']].entries()) {
+          const queueResult = await addToQueue({
+            booking: { date: "2025-07-28T15:30:00Z" },
+            order: { reference: `MIXED_${index + 1}` },
+            customer: { first_name: "Mixed", last_name: `Test${index + 1}` },
+            vehicule: { brand: "Test", model: "Car", registration_number: `MX-${index + 1}-TST` },
+            center: { phone: "0123456789" }
+          });
+
+          await markAsProcessing(queueResult.id);
+          const updateResult = await updateCallResult(queueResult.id, {
+            conversationId: `mixed_${index + 1}`,
+            call_status: 'answered',
+            result: result[0]
+          });
+
+          items.push({
+            reference: `MIXED_${index + 1}`,
+            result: result[0],
+            status: updateResult.status
+          });
+        }
+
+        return { scenario: 'mixed_results', items };
+      }
+    };
+
+    if (!scenarios[scenario]) {
+      return res.status(400).json({
+        success: false,
+        error: 'Scénario non reconnu',
+        available_scenarios: Object.keys(scenarios)
+      });
+    }
+
+    const result = await scenarios[scenario]();
+
+    res.json({
+      success: true,
+      message: `Test scénario ${scenario} exécuté`,
+      ...result,
+      test_mode: true
+    });
+
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      test_mode: true
+    });
+  }
+});
+
 // Debug endpoint pour vérifier les conversations actives
 app.get('/api/debug/conversations', (req, res) => {
   const conversations = Array.from(activeConversations.entries()).map(([id, data]) => ({
