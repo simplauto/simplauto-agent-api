@@ -2,6 +2,9 @@ require('dotenv').config();
 const express = require('express');
 const { normalizeFrenchPhoneNumber } = require('./phoneUtils');
 const AIAgentClient = require('./aiAgentClient');
+const { isBusinessHours, getNextBusinessTime, formatBusinessTime } = require('./businessHours');
+const { addToQueue, getReadyItems, markAsProcessing, updateCallResult, getQueueStats, cleanupOldItems } = require('./queueManager');
+const cron = require('node-cron');
 const axios = require('axios');
 const crypto = require('crypto');
 
@@ -34,6 +37,100 @@ if (missingVars.length > 0) {
 }
 
 const aiClient = new AIAgentClient(aiAgentConfig);
+
+// Variable pour éviter les traitements concurrents
+let isProcessingQueue = false;
+
+/**
+ * Traite la file d'attente (appelé par le cron job)
+ */
+async function processQueue() {
+  if (isProcessingQueue) {
+    console.log('⏳ Traitement déjà en cours, skip...');
+    return;
+  }
+
+  if (!isBusinessHours()) {
+    console.log('⏰ Hors horaires d\'ouverture, skip traitement file');
+    return;
+  }
+
+  isProcessingQueue = true;
+  
+  try {
+    const readyItems = await getReadyItems();
+    
+    if (readyItems.length === 0) {
+      console.log('📭 Aucun élément prêt dans la file d\'attente');
+      return;
+    }
+
+    console.log(`📋 ${readyItems.length} élément(s) prêt(s) à traiter`);
+
+    // Traiter seulement le premier élément (évite la surcharge)
+    const item = readyItems[0];
+    
+    try {
+      console.log(`🎯 Traitement de l'élément:`, {
+        id: item.id,
+        reference: item.data.order?.reference,
+        type: item.type,
+        attempts: item.attempts.total
+      });
+
+      // Marquer comme en cours de traitement
+      await markAsProcessing(item.id);
+
+      // Traiter la demande
+      const result = await processRefundRequest(item.data);
+
+      console.log(`✅ Traitement réussi:`, {
+        id: item.id,
+        conversationId: result.conversationId
+      });
+
+      // Le résultat sera mis à jour via le post-call webhook
+      // On stocke juste l'ID de queue pour le retrouver
+      activeConversations.set(result.conversationId, {
+        ...activeConversations.get(result.conversationId),
+        queue_item_id: item.id
+      });
+
+    } catch (error) {
+      console.error(`❌ Erreur traitement élément ${item.id}:`, error.message);
+      
+      // Marquer comme échec technique pour retry
+      await updateCallResult(item.id, {
+        conversationId: null,
+        call_status: 'failed',
+        result: 'failed',
+        reason: error.message
+      });
+    }
+
+  } catch (error) {
+    console.error('❌ Erreur processus file d\'attente:', error.message);
+  } finally {
+    isProcessingQueue = false;
+  }
+}
+
+// Cron job : toutes les 5 minutes pendant les heures d'ouverture
+cron.schedule('*/5 * * * *', async () => {
+  await processQueue();
+});
+
+// Nettoyage quotidien à 2h du matin
+cron.schedule('0 2 * * *', async () => {
+  try {
+    console.log('🧹 Nettoyage quotidien de la file d\'attente...');
+    await cleanupOldItems();
+  } catch (error) {
+    console.error('❌ Erreur nettoyage:', error.message);
+  }
+});
+
+console.log('⏰ Cron jobs configurés : traitement file (*/5 min) + nettoyage (2h)');
 
 // Configuration Crisp
 const CRISP_CONFIG = {
@@ -287,49 +384,13 @@ function analyzeTranscriptWithLLM(transcript) {
   return { status, reason };
 }
 
-// Validation des données du webhook
-const validateRefundRequest = (req, res, next) => {
-  const { booking, order, customer, vehicule, center } = req.body;
-
-  if (!booking || !order || !customer || !vehicule || !center) {
-    return res.status(400).json({
-      success: false,
-      error: 'Structure JSON invalide',
-      expected: 'booking, order, customer, vehicule, center'
-    });
-  }
-
-  const missingFields = [];
-  if (!order.reference) missingFields.push('order.reference');
-  if (!customer.first_name) missingFields.push('customer.first_name');
-  if (!customer.last_name) missingFields.push('customer.last_name');
-  if (!booking.date) missingFields.push('booking.date');
-  if (!center.phone && !center.affiliated_phone) missingFields.push('center.phone ou center.affiliated_phone');
+/**
+ * Traite une demande de remboursement (extraction données Crisp + appel ElevenLabs)
+ */
+async function processRefundRequest(webhookData) {
+  const { booking, order, customer, vehicule, center } = webhookData;
   
-  // customer.email est optionnel pour Crisp
-  // booking.backoffice_url est optionnel pour la rétrocompatibilité
-
-  if (missingFields.length > 0) {
-    return res.status(400).json({
-      success: false,
-      error: 'Données manquantes',
-      missingFields
-    });
-  }
-
-  // Normaliser les champs vides
-  if (!vehicule.brand || vehicule.brand === '') vehicule.brand = 'non renseignée';
-  if (!vehicule.model || vehicule.model === '') vehicule.model = 'non renseigné';
-  if (!vehicule.registration_number || vehicule.registration_number === '') vehicule.registration_number = 'non renseignée';
-
-  next();
-};
-
-// Endpoint webhook principal
-app.post('/api/webhook/refund-request', validateRefundRequest, async (req, res) => {
   try {
-    const { booking, order, customer, vehicule, center } = req.body;
-    
     // Normaliser le numéro de téléphone français
     const rawPhoneNumber = center.phone || center.affiliated_phone;
     const normalizedPhone = normalizeFrenchPhoneNumber(rawPhoneNumber);
@@ -371,13 +432,102 @@ app.post('/api/webhook/refund-request', validateRefundRequest, async (req, res) 
       explication_client: customerExplanation
     };
 
-    console.log('Demande de remboursement reçue:', {
+    console.log('Traitement demande de remboursement:', {
       reference: refundRequest.reference,
       client: refundRequest.nom_client,
       telephone: `${normalizedPhone} (original: ${rawPhoneNumber})`
     });
 
     // Vérifier la configuration avant l'appel
+    if (missingVars.length > 0) {
+      throw new Error(`Configuration incomplète: ${missingVars.join(', ')}`);
+    }
+
+    // Appeler l'agent IA
+    const result = await aiClient.callAgentWithRetry(refundRequest);
+
+    if (result.success) {
+      // Stocker les informations de la conversation pour le callback
+      activeConversations.set(result.conversationId, {
+        reference: order.reference,
+        backoffice_url: booking.backoffice_url || null,
+        customer_name: refundRequest.nom_client,
+        phone_number: refundRequest.telephone_centre,
+        timestamp: Date.now()
+      });
+
+      console.log('Appel téléphonique initié avec succès:', {
+        conversationId: result.conversationId,
+        reference: order.reference,
+        backoffice_url: booking.backoffice_url
+      });
+
+      return {
+        success: true,
+        conversationId: result.conversationId,
+        sipCallId: result.sipCallId
+      };
+    } else {
+      throw new Error(`Erreur lors de l'appel téléphonique: ${result.error}`);
+    }
+
+  } catch (error) {
+    console.error('Erreur lors du traitement de la demande:', error.message);
+    throw error;
+  }
+}
+
+// Validation des données du webhook
+const validateRefundRequest = (req, res, next) => {
+  const { booking, order, customer, vehicule, center } = req.body;
+
+  if (!booking || !order || !customer || !vehicule || !center) {
+    return res.status(400).json({
+      success: false,
+      error: 'Structure JSON invalide',
+      expected: 'booking, order, customer, vehicule, center'
+    });
+  }
+
+  const missingFields = [];
+  if (!order.reference) missingFields.push('order.reference');
+  if (!customer.first_name) missingFields.push('customer.first_name');
+  if (!customer.last_name) missingFields.push('customer.last_name');
+  if (!booking.date) missingFields.push('booking.date');
+  if (!center.phone && !center.affiliated_phone) missingFields.push('center.phone ou center.affiliated_phone');
+  
+  // customer.email est optionnel pour Crisp
+  // booking.backoffice_url est optionnel pour la rétrocompatibilité
+
+  if (missingFields.length > 0) {
+    return res.status(400).json({
+      success: false,
+      error: 'Données manquantes',
+      missingFields
+    });
+  }
+
+  // Normaliser les champs vides
+  if (!vehicule.brand || vehicule.brand === '') vehicule.brand = 'non renseignée';
+  if (!vehicule.model || vehicule.model === '') vehicule.model = 'non renseigné';
+  if (!vehicule.registration_number || vehicule.registration_number === '') vehicule.registration_number = 'non renseignée';
+
+  next();
+};
+
+// Endpoint webhook principal
+app.post('/api/webhook/refund-request', validateRefundRequest, async (req, res) => {
+  try {
+    const webhookData = { ...req.body };
+    const { order } = webhookData;
+    
+    console.log('📥 Webhook reçu:', {
+      reference: order.reference,
+      customer: `${webhookData.customer.first_name} ${webhookData.customer.last_name}`,
+      business_hours: isBusinessHours()
+    });
+
+    // Vérifier la configuration avant de traiter
     if (missingVars.length > 0) {
       return res.status(500).json({
         success: false,
@@ -386,41 +536,55 @@ app.post('/api/webhook/refund-request', validateRefundRequest, async (req, res) 
       });
     }
 
-    // Appeler l'agent IA immédiatement
-    const result = await aiClient.callAgentWithRetry(refundRequest);
-
-    if (result.success) {
-      // Stocker les informations de la conversation pour le callback
-      activeConversations.set(result.conversationId, {
-        reference: order.reference,
-        backoffice_url: booking.backoffice_url || null, // Peut être null pour rétrocompatibilité
-        customer_name: refundRequest.nom_client,
-        phone_number: refundRequest.telephone_centre,
-        timestamp: Date.now()
-      });
-
-      console.log('Conversation stockée:', {
-        conversationId: result.conversationId,
-        reference: order.reference,
-        backoffice_url: booking.backoffice_url
-      });
-
-      res.json({
-        success: true,
-        message: 'Appel téléphonique initié avec succès',
-        conversationId: result.conversationId,
-        sipCallId: result.sipCallId
-      });
+    // Vérifier si on est dans les horaires d'ouverture
+    if (isBusinessHours()) {
+      console.log('✅ Horaires d\'ouverture - Traitement immédiat');
+      
+      try {
+        const result = await processRefundRequest(webhookData);
+        
+        res.json({
+          success: true,
+          message: 'Appel téléphonique initié avec succès',
+          conversationId: result.conversationId,
+          sipCallId: result.sipCallId,
+          processed: 'immediately'
+        });
+      } catch (error) {
+        console.error('Erreur traitement immédiat:', error.message);
+        res.status(500).json({
+          success: false,
+          error: 'Erreur lors du traitement de la demande',
+          details: error.message
+        });
+      }
     } else {
-      res.status(500).json({
-        success: false,
-        error: 'Erreur lors de l\'appel téléphonique',
-        details: result.error
-      });
+      console.log('⏰ Hors horaires d\'ouverture - Ajout à la file d\'attente');
+      
+      try {
+        const queueResult = await addToQueue(webhookData);
+        const nextBusinessTime = getNextBusinessTime();
+        
+        res.json({
+          success: true,
+          message: 'Demande ajoutée à la file d\'attente',
+          queue_id: queueResult.id,
+          scheduled_for: queueResult.scheduled_for,
+          next_business_hours: formatBusinessTime(nextBusinessTime),
+          processed: 'queued'
+        });
+      } catch (error) {
+        console.error('Erreur ajout file d\'attente:', error.message);
+        res.status(500).json({
+          success: false,
+          error: 'Erreur lors de l\'ajout à la file d\'attente',
+          details: error.message
+        });
+      }
     }
 
   } catch (error) {
-    console.error('Erreur:', error.message);
+    console.error('Erreur webhook:', error.message);
     res.status(500).json({
       success: false,
       error: 'Erreur interne du serveur'
@@ -695,8 +859,42 @@ app.post('/api/webhook/post-call', express.raw({ type: 'application/json' }), as
       refund_response
     });
 
-    // Envoyer le callback vers Make.com si backoffice_url existe
-    if (conversationData.backoffice_url) {
+    // Vérifier si c'est un élément de la file d'attente
+    const queueItemId = conversationData.queue_item_id;
+    let queueUpdate = null;
+    
+    if (queueItemId) {
+      console.log('📋 Mise à jour file d\'attente pour:', queueItemId);
+      
+      try {
+        // Déterminer le résultat pour la file d'attente
+        let queueResult = status;
+        if (call_status !== 'answered') {
+          queueResult = call_status; // no_answer, voicemail, failed
+        }
+        
+        queueUpdate = await updateCallResult(queueItemId, {
+          conversationId,
+          call_status,
+          result: queueResult,
+          reason
+        });
+        
+        console.log('✅ File d\'attente mise à jour:', {
+          status: queueUpdate.status,
+          next_attempt: queueUpdate.next_attempt
+        });
+        
+      } catch (error) {
+        console.error('❌ Erreur mise à jour file d\'attente:', error.message);
+      }
+    }
+
+    // Envoyer le callback vers Make.com seulement si terminé définitivement
+    const shouldSendCallback = conversationData.backoffice_url && 
+      (!queueUpdate || queueUpdate.status === 'completed' || queueUpdate.status === 'failed');
+    
+    if (shouldSendCallback) {
       const payload = {
         booking: {
           backoffice_url: conversationData.backoffice_url
@@ -725,16 +923,104 @@ app.post('/api/webhook/post-call', express.raw({ type: 'application/json' }), as
       } catch (callbackError) {
         console.error('Erreur lors de l\'envoi du callback:', callbackError.message);
       }
+    } else if (queueUpdate && queueUpdate.status === 'rescheduled') {
+      console.log('🔄 Callback différé - appel reprogrammé:', {
+        reference: conversationData.reference,
+        next_attempt: queueUpdate.next_attempt
+      });
     }
 
     // Supprimer la conversation du cache
     activeConversations.delete(conversationId);
 
-    res.status(200).json({ received: true });
+    const responseData = { 
+      received: true,
+      ...(queueUpdate && {
+        queue_status: queueUpdate.status,
+        ...(queueUpdate.next_attempt && { next_attempt: queueUpdate.next_attempt })
+      })
+    };
+
+    res.status(200).json(responseData);
 
   } catch (error) {
     console.error('Erreur dans le webhook post-call:', error.message);
     res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Endpoints de monitoring file d'attente
+
+// Statut général de la file d'attente
+app.get('/api/queue/status', async (req, res) => {
+  try {
+    const stats = await getQueueStats();
+    res.json({
+      success: true,
+      ...stats,
+      business_hours: isBusinessHours(),
+      next_business_time: formatBusinessTime(getNextBusinessTime())
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// Prochaine heure d'ouverture
+app.get('/api/queue/next-business-hours', (req, res) => {
+  const nextTime = getNextBusinessTime();
+  
+  res.json({
+    success: true,
+    current_time: formatBusinessTime(new Date()),
+    is_business_hours: isBusinessHours(),
+    next_business_time: formatBusinessTime(nextTime),
+    next_business_timestamp: nextTime.toISOString()
+  });
+});
+
+// Forcer le traitement de la file (debug)
+app.post('/api/queue/process', async (req, res) => {
+  try {
+    if (isProcessingQueue) {
+      return res.json({
+        success: false,
+        message: 'Traitement déjà en cours'
+      });
+    }
+    
+    console.log('🔧 Traitement forcé de la file d\'attente');
+    await processQueue();
+    
+    res.json({
+      success: true,
+      message: 'Traitement de la file d\'attente lancé'
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// Nettoyer manuellement les anciens éléments
+app.post('/api/queue/cleanup', async (req, res) => {
+  try {
+    const result = await cleanupOldItems();
+    res.json({
+      success: true,
+      message: 'Nettoyage terminé',
+      ...result
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
   }
 });
 
