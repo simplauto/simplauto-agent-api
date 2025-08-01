@@ -81,8 +81,8 @@ async function processQueue() {
       // Marquer comme en cours de traitement
       await markAsProcessing(item.id);
 
-      // Traiter la demande
-      const result = await processRefundRequest(item.data);
+      // Traiter la demande (passer le type pour sélectionner le bon numéro)
+      const result = await processRefundRequest(item.data, item.type);
 
       console.log(`✅ Traitement réussi:`, {
         id: item.id,
@@ -387,12 +387,22 @@ function analyzeTranscriptWithLLM(transcript) {
 /**
  * Traite une demande de remboursement (extraction données Crisp + appel ElevenLabs)
  */
-async function processRefundRequest(webhookData) {
+async function processRefundRequest(webhookData, itemType = 'initial') {
   const { booking, order, customer, vehicule, center } = webhookData;
   
   try {
-    // Normaliser le numéro de téléphone français
-    const rawPhoneNumber = center.phone || center.affiliated_phone;
+    // Sélectionner le numéro selon le type d'appel
+    let rawPhoneNumber;
+    let phoneLabel;
+    
+    if (itemType === 'manager_escalation' && center.manager_phone) {
+      rawPhoneNumber = center.manager_phone;
+      phoneLabel = 'gérant';
+    } else {
+      rawPhoneNumber = center.phone || center.affiliated_phone;
+      phoneLabel = 'centre';
+    }
+    
     const normalizedPhone = normalizeFrenchPhoneNumber(rawPhoneNumber);
 
     // Extraire et normaliser le numéro de téléphone client
@@ -432,10 +442,11 @@ async function processRefundRequest(webhookData) {
       explication_client: customerExplanation
     };
 
-    console.log('Traitement demande de remboursement:', {
+    console.log(`${itemType === 'manager_escalation' ? '🔄 Escalade' : '📞 Traitement'} demande de remboursement:`, {
       reference: refundRequest.reference,
       client: refundRequest.nom_client,
-      telephone: `${normalizedPhone} (original: ${rawPhoneNumber})`
+      type: itemType,
+      telephone: `${normalizedPhone} (${phoneLabel}, original: ${rawPhoneNumber})`
     });
 
     // Vérifier la configuration avant l'appel
@@ -498,6 +509,7 @@ const validateRefundRequest = (req, res, next) => {
   
   // customer.email est optionnel pour Crisp
   // booking.backoffice_url est optionnel pour la rétrocompatibilité
+  // center.manager_phone est optionnel pour l'escalade vers le gérant
 
   if (missingFields.length > 0) {
     return res.status(400).json({
@@ -1049,7 +1061,8 @@ app.post('/api/test/webhook', async (req, res) => {
         registration_number: "AB-123-CD"
       },
       center: {
-        phone: "0987654321"
+        phone: "0987654321",
+        manager_phone: req.body.manager_phone || "0612345678"
       }
     };
 
@@ -1276,6 +1289,83 @@ app.post('/api/test/scenarios', async (req, res) => {
     });
 
   } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      test_mode: true
+    });
+  }
+});
+
+// Test endpoint spécifique pour l'escalade gérant
+app.post('/api/test/manager-escalation', async (req, res) => {
+  try {
+    // Créer un item de test et simuler 3 échecs pour déclencher l'escalade
+    const testData = {
+      booking: { 
+        date: "2025-07-28T15:30:00Z",
+        backoffice_url: "https://www.simplauto.com/backoffice/escalation-test-" + Date.now()
+      },
+      order: { reference: "ESCALATION_TEST_" + Date.now() },
+      customer: { 
+        first_name: "Escalade", 
+        last_name: "Test", 
+        email: "escalade@test.com",
+        phone: "0123456789"
+      },
+      vehicule: { 
+        brand: "Test", 
+        model: "Escalation", 
+        registration_number: "ESC-123-TEST" 
+      },
+      center: { 
+        phone: "0987654321", 
+        manager_phone: req.body.manager_phone || "0612345678"
+      }
+    };
+
+    console.log('🧪 Test escalade gérant - Ajout à la file d\'attente');
+    
+    // Ajouter à la file d'attente
+    const queueResult = await addToQueue(testData);
+    let itemId = queueResult.id;
+    
+    console.log('🧪 Simulation de 3 échecs techniques pour déclencher l\'escalade...');
+    
+    // Simuler 3 échecs techniques pour déclencher l'escalade
+    for (let i = 1; i <= 3; i++) {
+      await markAsProcessing(itemId);
+      const result = await updateCallResult(itemId, {
+        conversationId: null,
+        call_status: 'no_answer',
+        result: 'no_answer'
+      });
+      
+      console.log(`Échec ${i}/3:`, {
+        status: result.status,
+        escalation_triggered: result.status === 'escalated'
+      });
+      
+      if (result.status === 'escalated') {
+        return res.json({
+          success: true,
+          message: 'Escalade vers gérant déclenchée avec succès',
+          original_item_id: itemId,
+          escalation_id: result.escalation_id,
+          escalation_item: result.item,
+          test_mode: true
+        });
+      }
+    }
+
+    res.json({
+      success: false,
+      message: 'Escalade non déclenchée - vérifier la logique',
+      test_mode: true
+    });
+
+  } catch (error) {
+    console.error('Erreur test escalade:', error.message);
     res.status(500).json({
       success: false,
       error: error.message,

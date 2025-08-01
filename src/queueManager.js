@@ -289,20 +289,64 @@ async function updateCallResult(itemId, callResult) {
       item.attempts.technical_failures++;
       
       if (item.attempts.technical_failures >= 3) {
-        // Trop d'échecs techniques
-        item.status = 'failed';
-        item.failed_at = now.toISOString();
-        item.failure_reason = 'Trop d\'échecs techniques (3 max)';
-        queue.failed.push(item);
-        queue.stats.failed_calls++;
+        // Vérifier si escalade vers gérant possible
+        const hasManagerPhone = item.data.center?.manager_phone;
+        const isNotManagerCall = item.type !== 'manager_escalation';
         
-        console.log(`❌ Demande échouée - trop d'échecs:`, {
-          id: itemId,
-          result,
-          reference: item.data.order?.reference
-        });
-        
-        return { status: 'failed', item };
+        if (hasManagerPhone && isNotManagerCall) {
+          // Escalade vers le gérant
+          const escalationId = uuidv4();
+          const escalationItem = {
+            id: escalationId,
+            created_at: now.toISOString(),
+            scheduled_for: now.toISOString(), // Appel immédiat
+            type: 'manager_escalation',
+            attempts: {
+              total: 0,
+              technical_failures: 0,
+              callback_requests: 0
+            },
+            last_result: null,
+            history: [],
+            data: item.data, // Mêmes données, seul le numéro changera
+            original_item_id: itemId // Référence vers l'item original
+          };
+          
+          queue.pending.push(escalationItem);
+          
+          // Marquer l'item original comme escalé
+          item.status = 'escalated';
+          item.escalated_at = now.toISOString();
+          item.escalation_id = escalationId;
+          queue.completed.push(item); // Traiter comme "terminé" pour l'item centre
+          
+          console.log(`🔄 Escalade vers gérant:`, {
+            original_id: itemId,
+            escalation_id: escalationId,
+            reference: item.data.order?.reference,
+            manager_phone: item.data.center.manager_phone
+          });
+          
+          return { status: 'escalated', item: escalationItem, escalation_id: escalationId };
+        } else {
+          // Pas de gérant ou déjà un appel gérant → échec définitif
+          item.status = 'failed';
+          item.failed_at = now.toISOString();
+          item.failure_reason = hasManagerPhone ? 
+            'Trop d\'échecs techniques - escalade gérant échouée (3 max)' : 
+            'Trop d\'échecs techniques - pas de numéro gérant (3 max)';
+          queue.failed.push(item);
+          queue.stats.failed_calls++;
+          
+          console.log(`❌ Demande échouée - trop d'échecs:`, {
+            id: itemId,
+            result,
+            type: item.type,
+            reference: item.data.order?.reference
+          });
+          
+          return { status: 'failed', item };
+        }
       } else {
         // Reprogrammer retry
         const delayMinutes = getRetryDelay(result, item.attempts.technical_failures);

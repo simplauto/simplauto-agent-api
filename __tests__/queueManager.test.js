@@ -9,7 +9,17 @@ const { addToQueue, getReadyItems, markAsProcessing, updateCallResult, getQueueS
 // Tests simplifiés sans mock complexe
 
 describe('queueManager', () => {
-  // Nettoyer le fichier de queue après chaque test
+  // Nettoyer le fichier de queue avant et après chaque test
+  beforeEach(async () => {
+    try {
+      await fs.unlink(path.join(__dirname, '..', 'queue.json'));
+    } catch (e) { /* ignore */ }
+    try {
+      await fs.unlink(path.join(__dirname, '..', 'queue.lock'));
+    } catch (e) { /* ignore */ }
+    await new Promise(resolve => setTimeout(resolve, 50));
+  });
+  
   afterEach(async () => {
     try {
       await fs.unlink(path.join(__dirname, '..', 'queue.json'));
@@ -39,7 +49,8 @@ describe('queueManager', () => {
       registration_number: "AB-123-CD"
     },
     center: {
-      phone: "0987654321"
+      phone: "0987654321",
+      manager_phone: "0612345678" // Pour tester l'escalade
     }
   };
 
@@ -211,8 +222,8 @@ describe('queueManager', () => {
       expect(updateResult.item.attempts.technical_failures).toBe(1);
     });
 
-    test('should fail after 3 technical failures', async () => {
-      // Simuler 3 échecs techniques
+    test('should escalate to manager after 3 technical failures', async () => {
+      // Simuler 3 échecs techniques pour déclencher l'escalade
       for (let i = 1; i <= 3; i++) {
         if (i > 1) {
           await markAsProcessing(itemId);
@@ -232,8 +243,49 @@ describe('queueManager', () => {
           const stats = await getQueueStats();
           itemId = stats.next_items[0].id;
         } else {
+          // Au 3ème échec, escalade vers le gérant
+          expect(updateResult.status).toBe('escalated');
+          expect(updateResult.item.type).toBe('manager_escalation');
+          expect(updateResult.item.data.center.manager_phone).toBe('0612345678');
+          expect(updateResult.escalation_id).toBeDefined();
+        }
+      }
+    });
+
+    test('should fail after 3 technical failures without manager phone', async () => {
+      // Données sans numéro de gérant
+      const dataWithoutManager = {
+        ...sampleWebhookData,
+        center: {
+          phone: "0987654321"
+          // Pas de manager_phone
+        }
+      };
+      
+      const queueResult = await addToQueue(dataWithoutManager);
+      let itemId = queueResult.id;
+      
+      // Simuler 3 échecs techniques
+      for (let i = 1; i <= 3; i++) {
+        await markAsProcessing(itemId);
+        
+        const callResult = {
+          conversationId: null,
+          call_status: 'no_answer', 
+          result: 'no_answer'
+        };
+
+        const updateResult = await updateCallResult(itemId, callResult);
+        
+        if (i < 3) {
+          expect(updateResult.status).toBe('rescheduled');
+          // Récupérer le nouvel ID après reprogrammation
+          const stats = await getQueueStats();
+          itemId = stats.next_items[0].id;
+        } else {
+          // Sans numéro gérant, échec définitif
           expect(updateResult.status).toBe('failed');
-          expect(updateResult.item.failure_reason).toContain('Trop d\'échecs techniques');
+          expect(updateResult.item.failure_reason).toContain('pas de numéro gérant');
         }
       }
     });
