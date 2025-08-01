@@ -65,7 +65,8 @@ CLAUDE_API_KEY=sk-ant-your_claude_key
   "customer": {
     "first_name": "Alexandre",
     "last_name": "Senra Magalhaes",
-    "email": "alexandremagalhaes@sapo.pt"
+    "email": "alexandremagalhaes@sapo.pt",
+    "phone": "0766447890"
   },
   "vehicule": {
     "brand": "Audi",
@@ -78,7 +79,11 @@ CLAUDE_API_KEY=sk-ant-your_claude_key
 }
 ```
 
-**Nouveauté** : Le champ `customer.email` est optionnel mais **fortement recommandé**. Quand présent, le système :
+**Champs optionnels mais recommandés :**
+- `customer.email` : Permet l'intégration Crisp pour récupérer l'explication du client
+- `customer.phone` : Numéro de téléphone du client (normalisé automatiquement)
+
+Quand `customer.email` est présent, le système :
 1. Recherche automatiquement les conversations Crisp de ce client
 2. Extrait avec Claude AI le motif de remboursement expliqué par le client  
 3. Transmet cette explication personnalisée à l'agent ElevenLabs
@@ -94,21 +99,28 @@ L'agent ElevenLabs reçoit ces variables dynamiques :
 - `{{immatriculation}}` : "DL-401-WK" (ou "non renseignée" si vide)
 - `{{reference}}` : "B8F9UNQY"
 - `{{backoffice_url}}` : URL du backoffice Simplauto
+- `{{telephone_client}}` : **NOUVEAU** - "+33766447890" (numéro client normalisé)
 - `{{explication_client}}` : **NOUVEAU** - Motif de remboursement extrait par IA depuis Crisp
 
 **Exemple d'utilisation dans le prompt ElevenLabs :**
 ```
+Bonjour, je vous appelle concernant {{nom_client}}{{#if telephone_client}} au {{telephone_client}}{{/if}}, 
+qui avait un rendez-vous le {{date_reservation}}.
+
 {{#if explication_client}}
-Le client a expliqué que : {{explication_client}}
+Le client nous a expliqué que : {{explication_client}}
 {{/if}}
+
+Pouvez-vous valider cette demande de remboursement ?
 ```
 
 ### Normalisation Téléphone
 
-Tous les formats français sont normalisés :
+Tous les formats français sont automatiquement normalisés (centre ET client) :
 - `0688358752` → `+33688358752`
 - `06 88 35 87 52` → `+33688358752`
 - `06.88.35.87.52` → `+33688358752`
+- `0766447890` → `+33766447890`
 
 ## Endpoints
 

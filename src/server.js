@@ -334,6 +334,13 @@ app.post('/api/webhook/refund-request', validateRefundRequest, async (req, res) 
     const rawPhoneNumber = center.phone || center.affiliated_phone;
     const normalizedPhone = normalizeFrenchPhoneNumber(rawPhoneNumber);
 
+    // Extraire et normaliser le numéro de téléphone client
+    let customerPhone = null;
+    if (customer.phone) {
+      customerPhone = normalizeFrenchPhoneNumber(customer.phone);
+      console.log('📞 Numéro client:', customerPhone, '(original:', customer.phone + ')');
+    }
+
     // Récupérer l'explication du client depuis Crisp
     let customerExplanation = null;
     if (customer.email) {
@@ -359,6 +366,7 @@ app.post('/api/webhook/refund-request', validateRefundRequest, async (req, res) 
       modele_vehicule: vehicule.model,
       immatriculation: vehicule.registration_number,
       telephone_centre: normalizedPhone,
+      telephone_client: customerPhone,
       backoffice_url: booking.backoffice_url,
       explication_client: customerExplanation
     };

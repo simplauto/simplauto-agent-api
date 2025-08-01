@@ -34,6 +34,7 @@ class AIAgentClient {
           immatriculation: refundRequest.immatriculation,
           reference: refundRequest.reference,
           backoffice_url: refundRequest.backoffice_url,
+          telephone_client: refundRequest.telephone_client || null,
           explication_client: refundRequest.explication_client || null
         }
       }
